@@ -639,6 +639,37 @@ array_dealloc(arrayobject *op)
     Py_TYPE(op)->tp_free((PyObject *)op);
 }
 
+static Py_ssize_t
+arrays_mismatch_bytewise(char * lhs, char* rhs, Py_ssize_t length, int itemsize)
+{
+    Py_ssize_t i;
+    Py_ssize_t length_bytes = length * itemsize;
+    /* TODO(?): Could be greatly optimized by not just comparing byte by byte */
+    for (i = 0; i < length_bytes; ++i)
+        if (lhs[i] != rhs[i])
+            break;
+    return i / itemsize;
+}
+
+static Py_ssize_t
+arrays_mismatch_float(char * lhs, char* rhs, Py_ssize_t length)
+{
+    Py_ssize_t i;
+    for (i = 0; i < length; ++i)
+        if (((float*)lhs)[i] != ((float*)rhs)[i])
+            break;
+    return i;
+}
+static Py_ssize_t
+arrays_mismatch_double(char * lhs, char* rhs, Py_ssize_t length)
+{
+    Py_ssize_t i;
+    for (i = 0; i < length; ++i)
+        if (((double*)lhs)[i] != ((double*)rhs)[i])
+            break;
+    return i;
+}
+
 static PyObject *
 array_richcompare(PyObject *v, PyObject *w, int op)
 {
@@ -664,23 +695,49 @@ array_richcompare(PyObject *v, PyObject *w, int op)
         return res;
     }
 
-    /* Search for the first index where items are different */
-    k = 1;
-    for (i = 0; i < Py_SIZE(va) && i < Py_SIZE(wa); i++) {
-        vi = getarrayitem(v, i);
-        wi = getarrayitem(w, i);
-        if (vi == NULL || wi == NULL) {
-            Py_XDECREF(vi);
-            Py_XDECREF(wi);
-            return NULL;
+    /* Check if arrays store the same items;
+       If not, store the first not equal pair. */
+    if (va->ob_descr == wa->ob_descr) {
+        /* Arrays with same types can have their buffers compared directly */
+        Py_ssize_t itemsize = va->ob_descr->itemsize;
+        Py_ssize_t common_length = Py_MIN(Py_SIZE(va), Py_SIZE(wa));
+        Py_ssize_t mismatch;
+        if (va->ob_descr->typecode == 'f')
+            mismatch = arrays_mismatch_float(va->ob_item, wa->ob_item,
+                                             common_length);
+        else if (va->ob_descr->typecode == 'd')
+            mismatch = arrays_mismatch_double(va->ob_item, wa->ob_item,
+                                              common_length);
+        else
+            mismatch = arrays_mismatch_bytewise(va->ob_item, wa->ob_item,
+                                                common_length, itemsize);
+
+        if (mismatch == common_length) {
+            k = 1;
+        } else {
+            k = 0;
+            vi = getarrayitem(v, mismatch);
+            wi = getarrayitem(w, mismatch);
         }
-        k = PyObject_RichCompareBool(vi, wi, Py_EQ);
-        if (k == 0)
-            break; /* Keeping vi and wi alive! */
-        Py_DECREF(vi);
-        Py_DECREF(wi);
-        if (k < 0)
-            return NULL;
+    } else {
+        /* Fallback - convert items to Python objects to compare them */
+        k = 1;
+        for (i = 0; i < Py_SIZE(va) && i < Py_SIZE(wa); i++) {
+            vi = getarrayitem(v, i);
+            wi = getarrayitem(w, i);
+            if (vi == NULL || wi == NULL) {
+                Py_XDECREF(vi);
+                Py_XDECREF(wi);
+                return NULL;
+            }
+            k = PyObject_RichCompareBool(vi, wi, Py_EQ);
+            if (k == 0)
+                break; /* Keeping vi and wi alive! */
+            Py_DECREF(vi);
+            Py_DECREF(wi);
+            if (k < 0)
+                return NULL;
+        }
     }
 
     if (k) {
@@ -691,8 +748,10 @@ array_richcompare(PyObject *v, PyObject *w, int op)
         switch (op) {
         case Py_LT: cmp = vs <  ws; break;
         case Py_LE: cmp = vs <= ws; break;
-        case Py_EQ: cmp = vs == ws; break;
-        case Py_NE: cmp = vs != ws; break;
+        /* If the lengths were not equal,
+           the earlier fast-path check would have caught that. */
+        case Py_EQ: assert(vs == ws); cmp = 1; break;
+        case Py_NE: assert(vs == ws); cmp = 0; break;
         case Py_GT: cmp = vs >  ws; break;
         case Py_GE: cmp = vs >= ws; break;
         default: return NULL; /* cannot happen */

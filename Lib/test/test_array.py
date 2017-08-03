@@ -1342,6 +1342,12 @@ class FPTest(NumberTest):
     def assertEntryEqual(self, entry1, entry2):
         self.assertAlmostEqual(entry1, entry2)
 
+    def test_float_cmp(self):
+        for typecode in ['f', 'd']:
+            a = array.array(typecode, [0.0])
+            b = array.array(typecode, [-0.0])
+            self.assertEqual(a, b)
+
     def test_byteswap(self):
         a = array.array(self.typecode, self.example)
         self.assertRaises(TypeError, a.byteswap, 42)
